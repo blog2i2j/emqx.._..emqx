@@ -75,7 +75,7 @@ t_create_invalid(_Config) ->
     ),
     {ok, _} = emqx_authz:update(?CMD_REPLACE, [BadConfig]),
 
-    [_] = emqx_authz:lookup().
+    [_] = emqx_authz:lookup_states().
 
 t_node_cache(_Config) ->
     Case = #{
@@ -466,12 +466,6 @@ mysql_config() ->
         server => <<?MYSQL_HOST>>,
         ssl => #{enable => false}
     }.
-
-start_apps(Apps) ->
-    lists:foreach(fun application:ensure_all_started/1, Apps).
-
-stop_apps(Apps) ->
-    lists:foreach(fun application:stop/1, Apps).
 
 create_mysql_resource() ->
     {ok, _} = emqx_resource:create_local(

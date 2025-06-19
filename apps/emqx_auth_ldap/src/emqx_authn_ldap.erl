@@ -23,22 +23,30 @@
 create(_AuthenticatorID, Config) ->
     maybe
         ResourceId = emqx_authn_utils:make_resource_id(?AUTHN_BACKEND_BIN),
-        {ok, State} ?= parse_config(Config),
-        {ok, _Data} ?=
+        {ok, ResourceConfig, State} ?= create_state(ResourceId, Config),
+        ok ?=
             emqx_authn_utils:create_resource(
-                ResourceId, emqx_ldap_connector, Config, ?AUTHN_MECHANISM_BIN, ?AUTHN_BACKEND_BIN
+                emqx_ldap_connector,
+                ResourceConfig,
+                State,
+                ?AUTHN_MECHANISM_BIN,
+                ?AUTHN_BACKEND_BIN
             ),
-        {ok, State#{resource_id => ResourceId}}
+        {ok, State}
     end.
 
 update(Config, #{resource_id := ResourceId} = _State) ->
     maybe
-        {ok, NState} ?= parse_config(Config),
-        {ok, _} ?=
+        {ok, ResourceConfig, State} ?= create_state(ResourceId, Config),
+        ok ?=
             emqx_authn_utils:update_resource(
-                emqx_ldap_connector, Config, ResourceId, ?AUTHN_MECHANISM_BIN, ?AUTHN_BACKEND_BIN
+                emqx_ldap_connector,
+                ResourceConfig,
+                State,
+                ?AUTHN_MECHANISM_BIN,
+                ?AUTHN_BACKEND_BIN
             ),
-        {ok, NState#{resource_id => ResourceId}}
+        {ok, State}
     end.
 
 destroy(#{resource_id := ResourceId}) ->
@@ -54,8 +62,9 @@ authenticate(Credential, #{method := #{type := hash}} = State) ->
 authenticate(Credential, #{method := #{type := bind}} = State) ->
     emqx_authn_ldap_bind:authenticate(Credential, State).
 
-parse_config(
-    #{base_dn := BaseDN, filter := Filter, query_timeout := QueryTimeout, method := Method}
+create_state(
+    ResourceId,
+    #{base_dn := BaseDN, filter := Filter, query_timeout := QueryTimeout, method := Method} = Config
 ) ->
     maybe
         {PasswordVars, PasswordTemplate} =
@@ -72,12 +81,41 @@ parse_config(
         CacheKeyTemplate = emqx_auth_template:cache_key_template(
             lists:uniq(BaseDNVars ++ FilterVars ++ PasswordVars)
         ),
-        {ok, #{
-            query_timeout => QueryTimeout,
-            method => Method,
-            cache_key_template => CacheKeyTemplate,
-            base_dn_template => BaseDNTemplate,
-            filter_template => FilterTemplate,
-            password_template => PasswordTemplate
-        }}
+        AclAttributeNames = maps:with(
+            [
+                publish_attribute,
+                subscribe_attribute,
+                all_attribute,
+                acl_rule_attribute,
+                acl_ttl_attribute
+            ],
+            Config
+        ),
+        State = emqx_authn_utils:init_state(
+            Config,
+            maps:merge(AclAttributeNames, #{
+                query_timeout => QueryTimeout,
+                method => Method,
+                cache_key_template => CacheKeyTemplate,
+                base_dn_template => BaseDNTemplate,
+                filter_template => FilterTemplate,
+                password_template => PasswordTemplate,
+                resource_id => ResourceId
+            })
+        ),
+        ResourceConfig = emqx_authn_utils:cleanup_resource_config(
+            [
+                base_dn,
+                filter,
+                query_timeout,
+                method,
+                publish_attribute,
+                subscribe_attribute,
+                all_attribute,
+                acl_rule_attribute,
+                acl_ttl_attribute
+            ],
+            Config
+        ),
+        {ok, ResourceConfig, State}
     end.

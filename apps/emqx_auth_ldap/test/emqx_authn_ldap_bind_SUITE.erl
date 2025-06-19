@@ -13,7 +13,6 @@
 
 -define(LDAP_HOST, "ldap").
 -define(LDAP_DEFAULT_PORT, 389).
--define(LDAP_RESOURCE, <<"emqx_authn_ldap_bind_SUITE">>).
 
 -define(PATH, [authentication]).
 -define(ResourceID, <<"password_based:ldap">>).
@@ -43,13 +42,6 @@ init_per_suite(Config) ->
             Apps = emqx_cth_suite:start([emqx, emqx_conf, emqx_auth, emqx_auth_ldap], #{
                 work_dir => ?config(priv_dir, Config)
             }),
-            {ok, _Data} = emqx_authn_utils:create_resource(
-                ?LDAP_RESOURCE,
-                emqx_ldap_connector,
-                ldap_config(),
-                ?AUTHN_MECHANISM_BIN,
-                ?AUTHN_BACKEND_BIN
-            ),
             [{apps, Apps} | Config];
         false ->
             {skip, no_ldap}
@@ -60,7 +52,6 @@ end_per_suite(Config) ->
         [authentication],
         ?GLOBAL
     ),
-    ok = emqx_authn_ldap:destroy(#{resource_id => ?LDAP_RESOURCE}),
     ok = emqx_cth_suite:stop(?config(apps, Config)).
 
 %%------------------------------------------------------------------------------
@@ -114,7 +105,7 @@ t_authenticate(_Config) ->
 test_user_auth(#{
     credentials := Credentials0,
     config_params := SpecificConfigParams,
-    result := Result
+    result := ExpectedResult
 }) ->
     AuthConfig = maps:merge(raw_ldap_auth_config(), SpecificConfigParams),
 
@@ -128,7 +119,10 @@ test_user_auth(#{
         protocol => mqtt
     },
 
-    ?assertEqual(Result, emqx_access_control:authenticate(Credentials)),
+    %% Compare only the fields that are present in the expected result
+    ActualAuthResult0 = emqx_access_control:authenticate(Credentials),
+    ActualAuthResult = filter_expected_fields(ExpectedResult, ActualAuthResult0),
+    ?assertEqual(ExpectedResult, ActualAuthResult),
 
     emqx_authn_test_lib:delete_authenticators(
         [authentication],
@@ -362,5 +356,7 @@ user_seeds() ->
 ldap_server() ->
     iolist_to_binary(io_lib:format("~s:~B", [?LDAP_HOST, ?LDAP_DEFAULT_PORT])).
 
-ldap_config() ->
-    emqx_ldap_SUITE:ldap_config([]).
+filter_expected_fields({ok, Expected}, {ok, Actual}) ->
+    {ok, maps:with(maps:keys(Expected), Actual)};
+filter_expected_fields(_Expected, Actual) ->
+    Actual.

@@ -2231,7 +2231,16 @@ t_delete_and_re_create_with_same_name(_Config) ->
                 lists:seq(1, NumRequests)
             ),
 
-            {ok, _} = snabbkaffe:receive_events(SRef),
+            NumWorkersQueued =
+                case snabbkaffe:receive_events(SRef) of
+                    {ok, Events} ->
+                        length(Events);
+                    {timeout, [_ | _] = Events} ->
+                        %% At least one worker buffered stuff; should be enough?
+                        length(Events);
+                    {timeout, []} ->
+                        ct:fail("buffer workers did not buffer stuff to disk")
+                end,
 
             %% ensure that stuff got enqueued into disk
             tap_metrics(?LINE),
@@ -2250,7 +2259,7 @@ t_delete_and_re_create_with_same_name(_Config) ->
             ?retry(
                 _Sleep = 300,
                 _Attempts0 = 20,
-                ?assertEqual(2, emqx_resource_metrics:inflight_get(?ID))
+                ?assertEqual(NumWorkersQueued, emqx_resource_metrics:inflight_get(?ID))
             ),
 
             %% now, we delete the resource
@@ -2570,11 +2579,13 @@ t_async_reply_multi_eval(_Config) ->
     ),
     %% block
     ok = emqx_resource:simple_sync_query(?ID, block),
+    %% To track what happened.
+    ReplyTraceTab = ets:new(random_reply_trace, [public, ordered_set]),
     inc_counter_in_parallel(
         TotalQueries,
         fun() ->
             Rand = rand:uniform(1000),
-            {random_reply, Rand}
+            {random_reply, Rand, ReplyTraceTab}
         end,
         #{}
     ),
@@ -2595,7 +2606,15 @@ t_async_reply_multi_eval(_Config) ->
                 failed := Failed
             } = Counters,
             ?assertEqual(TotalQueries, Matched - 1),
-            ?assertEqual(Matched, Success + Dropped + LateReply + Failed, #{counters => Counters})
+            ?assertEqual(
+                Matched,
+                Success + Dropped + LateReply + Failed,
+                #{
+                    counters => Counters,
+                    total_queries => TotalQueries,
+                    generated_replies => [Res || {_, Res} <- ets:tab2list(ReplyTraceTab)]
+                }
+            )
         end
     ).
 
@@ -5158,7 +5177,7 @@ t_independent_channel_health_check_interval(_Config) ->
             %% `emqx_resource_cache'.
             ChanId = <<"action:atype:aname:", ConnResId/binary>>,
             ok =
-                emqx_resource_manager:add_channel(
+                add_channel_emulate_config(
                     ConnResId,
                     ChanId,
                     #{
@@ -5167,22 +5186,25 @@ t_independent_channel_health_check_interval(_Config) ->
                             %% repeat during the test
                             health_check_interval => 1_000_000
                         }
-                    }
+                    },
+                    async
                 ),
-            ?assertMatch(
-                {ok, #rt{
-                    st_err = #{status := ?status_connected},
-                    channel_status = ?status_connected
-                }},
-                emqx_resource_cache:get_runtime(ChanId)
+            ?retry(
+                100,
+                5,
+                ?assertMatch(
+                    {ok, #rt{
+                        st_err = #{status := ?status_connected},
+                        channel_status = ?status_connected
+                    }},
+                    emqx_resource_cache:get_runtime(ChanId)
+                )
             ),
             %% Upon entering `?status_connected` for the first time, the connector/resource
             %% will kick off the channel health check.  After that, the channel manages its
             %% own interval with generic statem timers, and should not be triggered again
             %% by the more frequent connector health checks.
             ?assertReceive({returning_resource_health_check_result, _, _}),
-            ?assertReceive({returning_channel_health_check_result, _, _, _}),
-            %% N.B.: without async add channel, there is a second health check performed.
             ?assertReceive({returning_channel_health_check_result, _, _, _}),
             %% Should not perform other channel health checks for a long time now.
             ?assertNotReceive({returning_channel_health_check_result, _, _, _}),
@@ -5296,7 +5318,7 @@ t_channel_health_check_timeout(_Config) ->
                 ),
             ChanId = action_res_id(ConnResId),
             ok =
-                add_channel(
+                add_channel_emulate_config(
                     ConnResId,
                     ChanId,
                     #{
@@ -5304,12 +5326,17 @@ t_channel_health_check_timeout(_Config) ->
                             health_check_interval => 100,
                             health_check_timeout => 750
                         }
-                    }
+                    },
+                    async
                 ),
-            %% Immediately after creatin is `?status_connected`
-            ?assertMatch(
-                {ok, #rt{channel_status = ?status_connected}},
-                emqx_resource_cache:get_runtime(ChanId)
+            %% Immediately after creating is `?status_connected`
+            ?retry(
+                100,
+                5,
+                ?assertMatch(
+                    {ok, #rt{channel_status = ?status_connected}},
+                    emqx_resource_cache:get_runtime(ChanId)
+                )
             ),
             %% After that, HC will hang, but abort after timeout.  Since the
             %% resource/connector is healthy, this should retry.

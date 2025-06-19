@@ -16,7 +16,7 @@
 %% APIs
 -export([
     create/1,
-    update/1,
+    update/2,
     destroy/1,
     authorize/4
 ]).
@@ -35,11 +35,12 @@
 %% emqx_authz callbacks
 %%--------------------------------------------------------------------
 
+%% NOTE: No state is needed for this source, just configuration.
 create(Source) ->
-    Source.
+    emqx_authz_utils:init_state(Source, #{}).
 
-update(Source) ->
-    Source.
+update(_State, Source) ->
+    create(Source).
 
 destroy(_Source) -> ok.
 
@@ -60,6 +61,7 @@ destroy(_Source) -> ok.
 %%
 %%    [{
 %%        Permission :: emqx_authz_rule:permission_resolution(),
+%%        Who :: emqx_authz_rule:who_condition(),
 %%        Action :: emqx_authz_rule:action_condition(),
 %%        Topics :: emqx_authz_rule:topic_condition()
 %%     }]
@@ -85,7 +87,10 @@ destroy(_Source) -> ok.
 %%
 %%            %% true | false | all | 0 | 1 | <<"true">> | ...
 %%            %% only for pub action
-%%            <<"retain">> => true
+%%            <<"retain">> => true,
+%%
+%%            ....
+%%            %% See `emqx_authz_rule_raw' for more fields
 %%        },
 %%        ...
 %%    ]

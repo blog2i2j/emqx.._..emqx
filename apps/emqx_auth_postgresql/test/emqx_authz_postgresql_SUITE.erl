@@ -59,11 +59,6 @@ end_per_testcase(_TestCase, _Config) ->
     ok = drop_table(),
     ok.
 
-set_special_configs(emqx_auth) ->
-    ok = emqx_authz_test_lib:reset_authorizers();
-set_special_configs(_) ->
-    ok.
-
 %%------------------------------------------------------------------------------
 %% Testcases
 %%------------------------------------------------------------------------------
@@ -81,7 +76,7 @@ t_create_invalid(_Config) ->
     ),
     {ok, _} = emqx_authz:update(?CMD_REPLACE, [BadConfig]),
 
-    [_] = emqx_authz:lookup().
+    [_] = emqx_authz:lookup_states().
 
 t_node_cache(_Config) ->
     Case = #{
@@ -471,9 +466,3 @@ create_pgsql_resource() ->
         pgsql_config(),
         #{}
     ).
-
-start_apps(Apps) ->
-    lists:foreach(fun application:ensure_all_started/1, Apps).
-
-stop_apps(Apps) ->
-    lists:foreach(fun application:stop/1, Apps).

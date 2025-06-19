@@ -82,7 +82,7 @@ t_create_with_config_values_wont_work(_Config) ->
     lists:foreach(
         fun(Config) ->
             {ok, _} = emqx_authz:update(?CMD_REPLACE, [Config]),
-            [_] = emqx_authz:lookup()
+            [_] = emqx_authz:lookup_states()
         end,
         InvalidConfigs
     ).
@@ -400,12 +400,6 @@ redis_config() ->
         server => <<?REDIS_HOST>>,
         ssl => #{enable => false}
     }.
-
-start_apps(Apps) ->
-    lists:foreach(fun application:ensure_all_started/1, Apps).
-
-stop_apps(Apps) ->
-    lists:foreach(fun application:stop/1, Apps).
 
 create_redis_resource() ->
     {ok, _} = emqx_resource:create_local(

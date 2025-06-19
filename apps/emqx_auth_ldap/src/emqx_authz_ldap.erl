@@ -8,7 +8,7 @@
 %% AuthZ Callbacks
 -export([
     create/1,
-    update/1,
+    update/2,
     destroy/1,
     authorize/4
 ]).
@@ -40,25 +40,17 @@
 
 create(Source) ->
     ResourceId = emqx_authz_utils:make_resource_id(?AUTHZ_TYPE),
-    Annotations = new_annotations(#{id => ResourceId}, Source),
-    case emqx_authz_utils:create_resource(ResourceId, emqx_ldap_connector, Source, ?AUTHZ_TYPE) of
-        {ok, _} ->
-            Source#{annotations => Annotations};
-        {error, Reason} ->
-            error({load_config_error, Reason})
-    end.
+    State = new_state(ResourceId, Source),
+    ok = emqx_authz_utils:create_resource(emqx_ldap_connector, State),
+    State.
 
-update(#{annotations := #{id := ResourceId}} = Source) ->
-    Annotations = new_annotations(#{id => ResourceId}, Source),
-    case emqx_authz_utils:update_resource(emqx_ldap_connector, Source, ?AUTHZ_TYPE) of
-        {ok, _ResourceId} ->
-            Source#{annotations => Annotations};
-        {error, Reason} ->
-            error({load_config_error, Reason})
-    end.
+update(#{resource_id := ResourceId} = _State, Source) ->
+    State = new_state(ResourceId, Source),
+    ok = emqx_authz_utils:update_resource(emqx_ldap_connector, State),
+    State.
 
-destroy(#{annotations := #{id := Id}}) ->
-    emqx_authz_utils:remove_resource(Id).
+destroy(#{resource_id := ResourceId}) ->
+    emqx_authz_utils:remove_resource(ResourceId).
 
 authorize(
     Client,
@@ -66,20 +58,18 @@ authorize(
     Topic,
     #{
         query_timeout := QueryTimeout,
-        annotations := #{
-            id := ResourceId,
-            cache_key_template := CacheKeyTemplate,
-            base_dn_template := BaseDNTemplate,
-            filter_template := FilterTemplate
-        } = Annotations
-    }
+        resource_id := ResourceId,
+        cache_key_template := CacheKeyTemplate,
+        base_dn_template := BaseDNTemplate,
+        filter_template := FilterTemplate
+    } = State
 ) ->
-    Attrs = select_attrs(Action, Annotations),
-    CacheKey = emqx_auth_template:cache_key(Client, CacheKeyTemplate, Attrs),
+    AclAttrs = emqx_auth_ldap_acl:acl_attributes(State),
+    CacheKey = emqx_auth_template:cache_key(Client, CacheKeyTemplate),
     Query = fun() ->
         BaseDN = emqx_auth_ldap_utils:render_base_dn(BaseDNTemplate, Client),
         Filter = emqx_auth_ldap_utils:render_filter(FilterTemplate, Client),
-        {query, BaseDN, Filter, [{attributes, Attrs}, {timeout, QueryTimeout}]}
+        {query, BaseDN, Filter, [{attributes, AclAttrs}, {timeout, QueryTimeout}]}
     end,
     Result = emqx_authz_utils:cached_simple_sync_query(
         CacheKey, ResourceId, Query
@@ -88,7 +78,17 @@ authorize(
         {ok, []} ->
             nomatch;
         {ok, [Entry]} ->
-            do_authorize(Action, Topic, Attrs, Entry);
+            case emqx_auth_ldap_acl:entry_rules(State, Entry) of
+                {ok, AclRules} ->
+                    emqx_authz_rule:matches(Client, Action, Topic, AclRules);
+                {error, Reason} ->
+                    ?SLOG(error, #{
+                        msg => "invalid_acl_rules",
+                        reason => Reason,
+                        ldap_entry => Entry
+                    }),
+                    nomatch
+            end;
         {error, Reason} ->
             ?SLOG(error, #{
                 msg => "ldap_query_failed",
@@ -98,45 +98,46 @@ authorize(
             nomatch
     end.
 
-do_authorize(Action, Topic, [Attr | T], Entry) ->
-    Topics = proplists:get_value(Attr, Entry#eldap_entry.attributes, []),
-    case match_topic(Topic, Topics) of
-        true ->
-            {matched, allow};
-        false ->
-            do_authorize(Action, Topic, T, Entry)
-    end;
-do_authorize(_Action, _Topic, [], _Entry) ->
-    nomatch.
+%%------------------------------------------------------------------------------
+%% Internal functions
+%%------------------------------------------------------------------------------
 
-new_annotations(Init, #{base_dn := BaseDN, filter := Filter} = Source) ->
+new_state(ResourceId, #{base_dn := BaseDN, filter := Filter} = Source) ->
     maybe
         {ok, BaseDNTemplate, BaseDNVars} ?= emqx_auth_ldap_utils:parse_dn(BaseDN, ?ALLOWED_VARS),
         {ok, FilterTemplate, FilterVars} ?=
             emqx_auth_ldap_utils:parse_filter(Filter, ?ALLOWED_VARS),
         CacheKeyTemplate = emqx_auth_template:cache_key_template(BaseDNVars ++ FilterVars),
-        State = maps:with(
-            [query_timeout, publish_attribute, subscribe_attribute, all_attribute], Source
+        ResourceConfig = emqx_authz_utils:cleanup_resource_config(
+            [
+                query_timeout,
+                publish_attribute,
+                subscribe_attribute,
+                all_attribute,
+                acl_rule_attribute,
+                base_dn,
+                filter
+            ],
+            Source
         ),
-        maps:merge(Init, State#{
+        AttrNames = maps:with(
+            [
+                query_timeout,
+                publish_attribute,
+                subscribe_attribute,
+                all_attribute,
+                acl_rule_attribute
+            ],
+            Source
+        ),
+        emqx_authz_utils:init_state(Source, AttrNames#{
             cache_key_template => CacheKeyTemplate,
             base_dn_template => BaseDNTemplate,
-            filter_template => FilterTemplate
+            filter_template => FilterTemplate,
+            resource_config => ResourceConfig,
+            resource_id => ResourceId
         })
     else
         {error, Reason} ->
             error({load_config_error, Reason})
     end.
-
-select_attrs(#{action_type := publish}, #{publish_attribute := Pub, all_attribute := All}) ->
-    [Pub, All];
-select_attrs(_, #{subscribe_attribute := Sub, all_attribute := All}) ->
-    [Sub, All].
-
-match_topic(Target, Topics) ->
-    lists:any(
-        fun(Topic) ->
-            emqx_topic:match(Target, erlang:list_to_binary(Topic))
-        end,
-        Topics
-    ).

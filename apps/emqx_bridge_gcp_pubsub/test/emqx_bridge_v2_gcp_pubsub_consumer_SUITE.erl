@@ -85,11 +85,7 @@ connector_config(Name, ServiceAccountJSON) ->
             <<"max_inactive">> => <<"10s">>,
             <<"service_account_json">> => ServiceAccountJSON,
             <<"resource_opts">> =>
-                #{
-                    <<"health_check_interval">> => <<"1s">>,
-                    <<"start_after_created">> => true,
-                    <<"start_timeout">> => <<"5s">>
-                }
+                emqx_bridge_v2_testlib:common_connector_resource_opts()
         },
     emqx_bridge_v2_testlib:parse_and_check_connector(?SOURCE_TYPE_BIN, Name, InnerConfigMap0).
 
@@ -103,11 +99,11 @@ source_config(Overrides0) ->
                 #{
                     <<"topic">> => <<"my-topic">>
                 },
-            <<"resource_opts">> => #{
-                <<"health_check_interval">> => <<"1s">>,
-                <<"request_ttl">> => <<"1s">>,
-                <<"resume_interval">> => <<"1s">>
-            }
+            <<"resource_opts">> =>
+                maps:merge(
+                    emqx_bridge_v2_testlib:common_source_resource_opts(),
+                    #{<<"request_ttl">> => <<"1s">>}
+                )
         },
     maps:merge(CommonConfig, Overrides).
 
